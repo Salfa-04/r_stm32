@@ -1,0 +1,32 @@
+[package]
+authors = ["Salfa Chang <salfa@foxmail.com>"]
+name = "based_project"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "based_project"
+test = false
+bench = false
+
+[dependencies]
+nb = "^1.1.0"
+cortex-m-rt = "^0.7.3"
+
+[dependencies.stm32f1xx-hal]
+version = "^0.10.0"
+features = ["rt", "stm32f103"]
+
+[profile.release]
+panic = "abort"
+lto = true
+
+[profile.dev]
+panic = "abort"
+opt-level = 3
+debug = false
+lto = true
+strip = "none"
+debug-assertions = false
+overflow-checks = false
+incremental = false
