@@ -43,6 +43,7 @@ fn USART1() {
 static mut BOARD_LED: MaybeUninit<gpio::Pin<'A', 6, gpio::Output>> = MaybeUninit::uninit();
 static mut RX: MaybeUninit<serial::Rx<pac::USART1>> = MaybeUninit::uninit();
 
+#[inline]
 fn system_init() {
     let dp = pac::Peripherals::take().unwrap();
     let cp = pac::CorePeripherals::take().unwrap();
