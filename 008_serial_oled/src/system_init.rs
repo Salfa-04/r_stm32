@@ -48,6 +48,8 @@ pub fn system_init() {
 
     {
         // User Code Here ⬇️
+        let mut tim2 = dp.TIM2.counter_hz(&clocks);
+        tim2.start(30_u32.Hz()).unwrap();
 
         let mut gpiob = dp.GPIOB.split();
         let oled_pins = (
@@ -56,9 +58,9 @@ pub fn system_init() {
         );
 
         unsafe {
-            // RX.write(serial.1);
+            RX.write(serial.1);
+            COUNT.write(tim2);
 
-            CLK.write(clocks);
             ADC1.write(adc::Adc::adc1(dp.ADC1, clocks));
             PHOT.write(gpioa.pa0.into_analog(&mut gpioa.crl));
             LED.write(gpioa.pa6.into_push_pull_output(&mut gpioa.crl));
