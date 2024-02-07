@@ -1,12 +1,205 @@
 use stm32f1xx_hal::prelude::_embedded_hal_blocking_i2c_Write;
 use stm32f1xx_hal::{gpio, i2c, pac};
 
-const OLED_ADDR: u8 = 0x3C;
-const CMD_DATA: [u8; 27] = [
-    0xAE, 0x00, 0x10, 0x40, 0xB0, 0x81, 0xFF, 0xA1, 0xA6, 0xA8, 0x3F, 0xC8, 0xD3, 0x00, 0xD5, 0x80,
-    0xD8, 0x05, 0xD9, 0xF1, 0xDA, 0x12, 0xD8, 0x30, 0x8D, 0x14, 0xAF,
-];
+pub struct Oled<const P: char, const N_CLK: u8, const N_DAT: u8> {
+    i2c: i2c::BlockingI2c<
+        pac::I2C1,
+        (
+            gpio::Pin<P, N_CLK, gpio::Alternate<gpio::OpenDrain>>,
+            gpio::Pin<P, N_DAT, gpio::Alternate<gpio::OpenDrain>>,
+        ),
+    >,
+}
 
+#[allow(unused)]
+impl<const P: char, const N_CLK: u8, const N_DAT: u8> Oled<P, N_CLK, N_DAT> {
+    const OLED_ADDR: u8 = 0x3C;
+
+    pub fn new(
+        i2c: i2c::BlockingI2c<
+            pac::I2C1,
+            (
+                gpio::Pin<P, N_CLK, gpio::Alternate<gpio::OpenDrain>>,
+                gpio::Pin<P, N_DAT, gpio::Alternate<gpio::OpenDrain>>,
+            ),
+        >,
+    ) -> Oled<P, N_CLK, N_DAT> {
+        Self { i2c }
+    }
+
+    fn write_cmd(&mut self, cmd: u8) -> Result<(), i2c::Error> {
+        self.i2c.write(Self::OLED_ADDR, &[0x00, cmd])
+    }
+
+    fn write_data(&mut self, data: u8) -> Result<(), i2c::Error> {
+        self.i2c.write(Self::OLED_ADDR, &[0x40, data])
+    }
+
+    pub fn init(&mut self) -> Result<(), i2c::Error> {
+        for cmd in &[
+            0xAE, 0x00, 0x10, 0x40, 0xB0, 0x81, 0xFF, 0xA1, 0xA6, 0xA8, 0x3F, 0xC8, 0xD3, 0x00,
+            0xD5, 0x80, 0xD8, 0x05, 0xD9, 0xF1, 0xDA, 0x12, 0xD8, 0x30, 0x8D, 0x14, 0xAF,
+        ] {
+            self.write_cmd(*cmd)?;
+        }
+        Ok(())
+    }
+
+    pub fn clear(&mut self) -> Result<(), i2c::Error> {
+        for i in 0..8 {
+            self.write_cmd(0xb0 + i)?;
+            self.write_cmd(0x00)?;
+            self.write_cmd(0x10)?;
+            for _ in 0..128 {
+                self.write_data(0)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn display_on(&mut self) -> Result<(), i2c::Error> {
+        self.write_cmd(0x8D)?; // SET DCDC命令
+        self.write_cmd(0x14)?; // DCDC ON
+        self.write_cmd(0xAF)?; // DISPLAY ON
+        Ok(())
+    }
+
+    pub fn display_off(&mut self) -> Result<(), i2c::Error> {
+        self.write_cmd(0x8D)?; // SET DCDC命令
+        self.write_cmd(0x10)?; // DCDC OFF
+        self.write_cmd(0xAE)?; // DISPLAY OFF
+        Ok(())
+    }
+
+    // 共8行：0..8 (0~7)
+    // 共128列：0..128 (0~127)
+    // x=>(0..128) y=>(0..64)
+    pub fn set_pos(&mut self, x: u8, y: u8) -> Result<(), i2c::Error> {
+        self.write_cmd(0xb0 + y)?;
+        self.write_cmd(((x & 0xf0) >> 4) | 0x10)?;
+        self.write_cmd(x & 0x0f)?;
+
+        Ok(())
+    }
+
+    pub fn show_char(&mut self, mut x: u8, mut y: u8, chr: char) -> Result<(), i2c::Error> {
+        let chr = chr as u8 - ' ' as u8;
+
+        while x > 128 - 1 {
+            x -= 128;
+        }
+
+        while y > 8 - 1 {
+            y -= 8;
+        }
+
+        self.set_pos(x, y)?;
+        for i in 0..8u8 {
+            self.write_data(ASCII_FONT[chr as usize * 16 + i as usize])?;
+        }
+
+        self.set_pos(x, y + 1)?;
+        for i in 0..8u8 {
+            self.write_data(ASCII_FONT[chr as usize * 16 + i as usize + 8])?;
+        }
+
+        Ok(())
+    }
+
+    pub fn show_number(&mut self, mut x: u8, mut y: u8, mut number: u64) -> Result<(), i2c::Error> {
+        let mut num: u64 = 0;
+        while number > 0 {
+            num = num * 10 + number % 10;
+            number /= 10;
+        }
+
+        while num > 0 {
+            self.show_char(x, y, ((num % 10) as u8 + '0' as u8) as char)?;
+            num /= 10;
+            x += 8;
+
+            if x > 128 - 8 {
+                x = 0;
+                y += 2;
+            }
+        }
+
+        Ok(())
+    }
+
+    // ASCII CHAR ONLY
+    pub fn show_string(&mut self, mut x: u8, mut y: u8, string: &str) -> Result<(), i2c::Error> {
+        for chr in string.as_bytes() {
+            self.show_char(x, y, *chr as char)?;
+            x += 8;
+
+            if x > 128 - 8 {
+                x = 0;
+                y += 2;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn show_hzk(&mut self, mut x: u8, mut y: u8, hzk: &[u8; 32]) -> Result<(), i2c::Error> {
+        while x > 128 - 1 {
+            x -= 128;
+        }
+
+        while y > 8 - 1 {
+            y -= 8;
+        }
+
+        self.set_pos(x, y)?;
+        for hz in &hzk[..16] {
+            self.write_data(*hz)?;
+        }
+
+        self.set_pos(x, y + 1)?;
+        for hz in &hzk[16..] {
+            self.write_data(*hz)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn show_hzks(&mut self, mut x: u8, mut y: u8, hzk: &[[u8; 32]]) -> Result<(), i2c::Error> {
+        for hz in hzk {
+            self.show_hzk(x, y, hz)?;
+            x += 16;
+
+            if x > 128 - 8 {
+                x = 0;
+                y += 2;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn show_pic(&mut self, width: u8, high: u8, picture: &[u8]) -> Result<(), i2c::Error> {
+        let mut x = 0u8;
+        let mut y = 0u8;
+        for pixal in picture {
+            self.set_pos(x, y)?;
+            self.write_data(*pixal)?;
+            x += 1;
+
+            if x > width - 1 {
+                x = 0;
+                y += 1;
+            }
+
+            if y > high - 1 {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(unused)]
 const ASCII_FONT: [u8; 1520] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, // sp 0
@@ -199,176 +392,3 @@ const ASCII_FONT: [u8; 1520] = [
     0x00, 0x06, 0x01, 0x01, 0x02, 0x02, 0x04, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, // ~ 94
 ];
-
-pub struct Oled<const P: char, const N_CLK: u8, const N_DAT: u8> {
-    i2c: i2c::BlockingI2c<
-        pac::I2C1,
-        (
-            gpio::Pin<P, N_CLK, gpio::Alternate<gpio::OpenDrain>>,
-            gpio::Pin<P, N_DAT, gpio::Alternate<gpio::OpenDrain>>,
-        ),
-    >,
-}
-
-#[allow(unused)]
-impl<const P: char, const N_CLK: u8, const N_DAT: u8> Oled<P, N_CLK, N_DAT> {
-    pub fn new(
-        i2c: i2c::BlockingI2c<
-            pac::I2C1,
-            (
-                gpio::Pin<P, N_CLK, gpio::Alternate<gpio::OpenDrain>>,
-                gpio::Pin<P, N_DAT, gpio::Alternate<gpio::OpenDrain>>,
-            ),
-        >,
-    ) -> Oled<P, N_CLK, N_DAT> {
-        Self { i2c }
-    }
-
-    pub fn write_cmd(&mut self, cmd: u8) -> Result<(), i2c::Error> {
-        self.i2c.write(OLED_ADDR, &[0x00, cmd])
-    }
-
-    pub fn write_data(&mut self, data: u8) -> Result<(), i2c::Error> {
-        self.i2c.write(OLED_ADDR, &[0x40, data])
-    }
-
-    pub fn init(&mut self) -> Result<(), i2c::Error> {
-        for cmd in CMD_DATA {
-            self.write_cmd(cmd)?;
-        }
-        Ok(())
-    }
-
-    pub fn clear(&mut self) -> Result<(), i2c::Error> {
-        for i in 0..8 {
-            self.write_cmd(0xb0 + i)?;
-            self.write_cmd(0x00)?;
-            self.write_cmd(0x10)?;
-            for _ in 0..128 {
-                self.write_data(0)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn display_on(&mut self) -> Result<(), i2c::Error> {
-        self.write_cmd(0x8D); // SET DCDC命令
-        self.write_cmd(0x14); // DCDC ON
-        self.write_cmd(0xAF); // DISPLAY ON
-        Ok(())
-    }
-
-    pub fn display_off(&mut self) -> Result<(), i2c::Error> {
-        self.write_cmd(0x8D); // SET DCDC命令
-        self.write_cmd(0x10); // DCDC OFF
-        self.write_cmd(0xAE); // DISPLAY OFF
-        Ok(())
-    }
-
-    // 共8行：0..8 (0~7)
-    // 共128列：0..128 (0~127)
-    pub fn set_pos(&mut self, x: u8, y: u8) -> Result<(), i2c::Error> {
-        self.write_cmd(0xb0 + y);
-        self.write_cmd(((x & 0xf0) >> 4) | 0x10);
-        self.write_cmd(x & 0x0f);
-
-        Ok(())
-    }
-
-    pub fn show_char(&mut self, mut x: u8, mut y: u8, chr: char) -> Result<(), i2c::Error> {
-        let chr = chr as u8 - ' ' as u8;
-
-        while x > 128 - 1 {
-            x -= 128;
-        }
-
-        while y > 8 - 1 {
-            y -= 8;
-        }
-
-        self.set_pos(x, y);
-        for i in 0..8usize {
-            self.write_data(ASCII_FONT[chr as usize * 16 + i]);
-        }
-
-        self.set_pos(x, y + 1);
-        for i in 0..8usize {
-            self.write_data(ASCII_FONT[chr as usize * 16 + i + 8]);
-        }
-
-        Ok(())
-    }
-
-    pub fn show_number(&mut self, mut x: u8, mut y: u8, mut number: u64) -> Result<(), i2c::Error> {
-        let mut num: u64 = 0;
-        while number > 0 {
-            num = num * 10 + number % 10;
-            number /= 10;
-        }
-
-        let mut chr: u8;
-        while num > 0 {
-            chr = (num % 10) as u8 + '0' as u8;
-            self.show_char(x, y, chr as char);
-            num /= 10;
-            x += 8;
-
-            if x > 128 - 8 {
-                x = 0;
-                y += 2;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn show_string(&mut self, mut x: u8, mut y: u8, string: &str) -> Result<(), i2c::Error> {
-        for chr in string.as_bytes() {
-            self.show_char(x, y, *chr as char)?;
-            x += 8;
-
-            if x > 128 - 8 {
-                x = 0;
-                y += 2;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn show_hzk(&mut self, mut x: u8, mut y: u8, hzk: &[u8; 32]) -> Result<(), i2c::Error> {
-        while x > 128 - 1 {
-            x -= 128;
-        }
-
-        while y > 8 - 1 {
-            y -= 8;
-        }
-
-        self.set_pos(x, y)?;
-        for hz in &hzk[..16] {
-            self.write_data(*hz)?;
-        }
-
-        self.set_pos(x, y + 1);
-        for hz in &hzk[16..] {
-            self.write_data(*hz)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn show_hzks(&mut self, mut x: u8, mut y: u8, hzk: &[[u8; 32]]) -> Result<(), i2c::Error> {
-        for hz in hzk {
-            self.show_hzk(x, y, hz);
-            x += 16;
-
-            if x > 128 - 8 {
-                x = 0;
-                y += 2;
-            }
-        }
-
-        Ok(())
-    }
-}
